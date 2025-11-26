@@ -1,0 +1,60 @@
+PROMP BASE
+
+	1.	Apertura: "Manteniendo toda la lógica... vamos a incluir"
+	2.	Descripción técnica: Qué es, de qué trata, en qué se basa.
+	3.	Ejemplo sobre cómo se espera que funcione. 
+	4.	Cierre: "Si lo tienes claro, adelante, dame el código completo"
+
+
+
+
+Ejemplo de petición de investigación
+[CÓDIGO] 
+Como verás en el código, estoy utilizando patrones de entrada muy básicos basados en acción del precio.
+Quiero que hagas una investigación profunda y que me des propuestas de patrones adicionales que sean igual de simples y robustos; patrones que exploten una ventaja subyacente real y que sólo utilicen los datos del precio.
+
+Ahora no me des nada de código, simplemente vamos a reflexionar. Posteriormente, cuando decidamos, te pediré que lo integres en el código.
+
+
+
+
+
+
+Ejemplo de petición de nueva entrada/salida
+[CÓDIGO] 
+Manteniendo toda la lógica de la estrategia sin modificar, vamos a incluir una nueva entrada: “Volumen climático”.
+
+Se trata de comparar el último volumen respecto de los volúmenes previos para identificar cuándo hay un aumento significativo, lo cual nos estará anunciando que hay una alta participación en ese punto.
+Para que la comparación sea representativa, vamos a compararlo con el promedio de las últimas 20 velas de volumen.
+
+Reglas para confirmar la entrada:
+- Alcista: Aparición de volumen climático + vela alcista.
+- Bajista: Aparición de volumen climático + vela bajista.
+Tras confirmar la entrada, enviamos una orden a mercado a la apertura de la siguiente vela.
+
+Esta nueva entrada debe integrarse en el esqueleto del código al igual que lo están el resto de entradas; es decir, debe poder combinarse con otras entradas, salidas, filtros etc.
+
+Si es una modificación menor, que sólo afecte a un bloque en concreto del código, dame sólo ese bloque y dime qué, cómo y dónde debo incluir cada pieza de código; pero si altera más de un bloque, dame todo el código completo modificado.
+
+
+
+
+
+
+
+Ejemplo de petición de nuevo filtro
+[CÓDIGO] 
+Manteniendo toda la lógica de la estrategia sin modificar, vamos a incluir un nuevo filtro: “Volatilidad”, y lo vas a incluir dentro del bloque "Filtros”.
+
+Vamos a utilizar el indicador ATR de forma que podamos diferenciar entornos de alta y baja volatilidad.
+
+Este filtro va a tener tres desplegables:
+- Sin filtro: Si está activado, se permiten todas las operaciones. Este filtro no actúa.
+- Volatilidad alta: Si está activado, sólo se toman operaciones que cumplen con la condición de volatilidad alta.
+- Volatilidad baja: Si está activado, sólo se toman operaciones que cumplen con la condición de volatilidad baja.
+
+Para definir la volatilidad vamos a utilizar un ATR de 14 períodos.
+
+Este nuevo filtro debe integrarse en el esqueleto del código al igual que lo están el resto de filtros.
+
+Si es una modificación menor, que sólo afecte a un bloque en concreto del código, dame sólo ese bloque y dime qué, cómo y dónde debo incluir cada pieza de código; pero si altera más de un bloque, dame todo el código completo modificado.

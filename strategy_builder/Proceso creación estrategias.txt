@@ -1,0 +1,29 @@
+1. Configuración base.
+	- B-ADJ. Amplificador de barras. Comisiones/slippage.
+	- Seleccionar un activo, un TF y un sentido. Activar todos los inputs/filtros.
+2. Test inicial.
+	- Revisar patrón a patrón de forma individual, clasificar según su rendimiento y verificar en todo el histórico.
+	- Criterios mínimos para pasar a optimización: >200 trades por patrón y curva decente.
+3. Optimización.
+	- Seleccionar ventana de trabajo 2007 a 2023.
+	- Filtros. Con patrones core, probar filtros de general a específico. (Régimen -> Sesiones -> Días)
+	- Validar backtest. Con patrones core y filtros seleccionados, iterar con otros patrones, Ratios TP, Ticks entrada/SL, otras salidas etc. Todo lo que sea optimizable debe hacerse en esta ventana IS.
+	- Criterios mínimos para pasar >1000 trades a nivel backtest (no en esta ventana, sino en todo el histórico).
+4. Robustez. 
+    1. Incubación. Con la configuración definitiva, verificar rendimiento en ventana 2024-actualidad.
+    2. Pruebas de estrés
+        1. Probar en un TF inferior y superior. Debe dejar una curva relativamente estable.
+        2. Probar en otros activos, idealmente de misma naturaleza.
+        3. Aumentar comisiones/slippage.
+5. Registro en excel, proceso creación cartera y operativa.
+
+
+Fundamentos sobre filtros:
+1. Cuantos menos filtros usemos, mejor. Si no hay una mejora evidente y se mantienen alto el nº de trades, mejor no incluir filtros.
+2. La clave es que siempre haya suficiente nº de trades. A nivel backtest debemos tener al menos 1000 trades.
+3. Cada filtro que se incluya debe verificarse que tiene sentido (que deja un rendimiento perdedor a largo plazo).
+4. Como objetivos, priorizar Drawdown y periodo de estancamiento por encima del beneficio.
+5. El orden del uso de filtros idealmente debe ser “de general a específico”, dependiendo del nº de posibilidades del filtro (regímenes -> sesiones de negociación -> días)
+	1. Mas generales = Regímenes -> filtros con dos posibilidades, como el VWAP(por encima o por debajo).
+	2. Intermedio = Sesiones de negociación (3 posibilidades)
+	3. Menos generales = Días de las emana (5 posibilidades).
