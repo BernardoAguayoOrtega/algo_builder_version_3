@@ -46,13 +46,21 @@ timeframe = st.sidebar.selectbox(
     index=timeframes.index("1d"),
 )
 
-# Date range
+# Date range - allow selection back to 2000
 col1, col2 = st.sidebar.columns(2)
 limit = TIMEFRAME_LIMITS.get(timeframe)
 default_days = min(limit * 2, 365) if limit else 365 * 2
 
+# Show data availability hint for intraday timeframes
+if limit:
+    st.sidebar.caption(f"Note: {timeframe} data limited to last {limit} days")
+
 with col1:
-    start_date = st.date_input("Start", value=datetime.now() - timedelta(days=default_days))
+    start_date = st.date_input(
+        "Start",
+        value=datetime.now() - timedelta(days=default_days),
+        min_value=datetime(2000, 1, 1),
+    )
 with col2:
     end_date = st.date_input("End", value=datetime.now())
 
@@ -317,7 +325,7 @@ if load_button:
             def update_progress(current, total, message):
                 progress_container.text(f"📡 {message}")
 
-            df = fetch_data(
+            result = fetch_data(
                 symbol=symbol, timeframe=timeframe,
                 start_date=datetime.combine(start_date, datetime.min.time()),
                 end_date=datetime.combine(end_date, datetime.max.time()),
@@ -325,6 +333,7 @@ if load_button:
             )
             progress_container.empty()
 
+            df = result.df
             st.session_state["df"] = df
             st.session_state["symbol"] = symbol
             st.session_state["timeframe"] = timeframe
@@ -332,6 +341,10 @@ if load_button:
             st.session_state.pop("result", None)  # Clear previous backtest
 
             st.success(f"✅ Loaded {len(df):,} bars from {df.index[0].strftime('%Y-%m-%d')} to {df.index[-1].strftime('%Y-%m-%d')}")
+
+            # Show warning if data range differs from requested
+            if result.message:
+                st.warning(result.message)
         except Exception as e:
             st.error(f"❌ Error: {e}")
 

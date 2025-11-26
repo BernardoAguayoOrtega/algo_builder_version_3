@@ -6,6 +6,7 @@ import pandas as pd
 import yfinance as yf
 from datetime import datetime, timedelta
 from typing import Optional, List, Tuple
+from dataclasses import dataclass
 import time
 
 
@@ -150,13 +151,24 @@ def standardize_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df[available_cols]
 
 
+@dataclass
+class FetchResult:
+    """Result from data fetch with metadata."""
+    df: pd.DataFrame
+    requested_start: datetime
+    actual_start: datetime
+    requested_end: datetime
+    actual_end: datetime
+    message: Optional[str] = None
+
+
 def fetch_data(
     symbol: str,
     timeframe: str = "1d",
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
     progress_callback=None,
-) -> pd.DataFrame:
+) -> FetchResult:
     """
     Fetch OHLCV data from Yahoo Finance with automatic chunking.
 
@@ -168,7 +180,7 @@ def fetch_data(
         progress_callback: Optional callback(current, total, message) for progress updates
 
     Returns:
-        DataFrame with columns: open, high, low, close, volume
+        FetchResult with DataFrame and metadata about what was actually fetched
     """
     if timeframe not in YAHOO_INTERVALS:
         raise ValueError(f"Invalid timeframe: {timeframe}. Use one of {list(YAHOO_INTERVALS.keys())}")
@@ -191,13 +203,19 @@ def fetch_data(
         else:
             start_date = end_date - timedelta(days=365 * 5)  # 5 years default for daily+
 
+    # Store original requested dates for reporting
+    requested_start = start_date
+    requested_end = end_date
+    message = None
+
     # Enforce Yahoo's hard limit: can't request data older than max_days_back from TODAY
     if max_days_back is not None:
         earliest_allowed = now - timedelta(days=max_days_back)
         if start_date < earliest_allowed:
             start_date = earliest_allowed
+            message = f"⚠️ {timeframe} data limited to last {max_days_back} days by Yahoo Finance"
             if progress_callback:
-                progress_callback(0, 1, f"Note: {timeframe} data limited to last {max_days_back} days")
+                progress_callback(0, 1, message)
 
     # For intraday timeframes, use chunking to avoid timeouts
     if chunk_size is not None:
@@ -243,7 +261,7 @@ def fetch_data(
         df = fetch_chunk(symbol, yahoo_interval, start_date, end_date)
 
     if df.empty:
-        raise ValueError(f"No data found for {symbol}")
+        raise ValueError(f"No data found for {symbol}. The symbol may not exist or have no data for this period.")
 
     # Standardize column names
     df = standardize_columns(df)
@@ -254,7 +272,22 @@ def fetch_data(
             progress_callback(1, 1, "Resampling to 4h...")
         df = resample_to_4h(df)
 
-    return df
+    # Get actual date range from data
+    actual_start = df.index[0].to_pydatetime() if hasattr(df.index[0], 'to_pydatetime') else df.index[0]
+    actual_end = df.index[-1].to_pydatetime() if hasattr(df.index[-1], 'to_pydatetime') else df.index[-1]
+
+    # Build message if data range differs from requested
+    if message is None and requested_start.date() < actual_start.date():
+        message = f"⚠️ Data only available from {actual_start.strftime('%Y-%m-%d')} (requested {requested_start.strftime('%Y-%m-%d')})"
+
+    return FetchResult(
+        df=df,
+        requested_start=requested_start,
+        actual_start=actual_start,
+        requested_end=requested_end,
+        actual_end=actual_end,
+        message=message,
+    )
 
 
 def get_symbol_info(symbol: str) -> dict:
