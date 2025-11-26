@@ -366,10 +366,27 @@ if "df" in st.session_state:
     symbol = st.session_state["symbol"]
     timeframe = st.session_state["timeframe"]
 
-    # Tabs
-    tab1, tab2, tab3, tab4 = st.tabs(["📈 Chart", "📊 Results", "📋 Trades", "🔬 Optimizer"])
+    # Tab navigation using selectbox to persist selection
+    tab_names = ["📈 Chart", "📊 Results", "📋 Trades", "🔬 Optimizer"]
 
-    with tab1:
+    # Get current tab from session state
+    if "active_tab" not in st.session_state:
+        st.session_state["active_tab"] = "📈 Chart"
+
+    selected_tab = st.radio(
+        "Navigation",
+        tab_names,
+        index=tab_names.index(st.session_state["active_tab"]),
+        horizontal=True,
+        key="tab_selector",
+        label_visibility="collapsed",
+    )
+    st.session_state["active_tab"] = selected_tab
+
+    st.divider()
+
+    # Chart tab
+    if selected_tab == "📈 Chart":
         if "result" in st.session_state:
             fig = create_chart_with_trades(df, st.session_state["result"], symbol, timeframe)
         else:
@@ -390,7 +407,8 @@ if "df" in st.session_state:
                              showlegend=True, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
         st.plotly_chart(fig, use_container_width=True)
 
-    with tab2:
+    # Results tab
+    elif selected_tab == "📊 Results":
         if "result" in st.session_state:
             result = st.session_state["result"]
 
@@ -428,7 +446,8 @@ if "df" in st.session_state:
         else:
             st.info("👈 Click **Run Backtest** to see results")
 
-    with tab3:
+    # Trades tab
+    elif selected_tab == "📋 Trades":
         if "result" in st.session_state and st.session_state["result"].trades:
             result = st.session_state["result"]
             trades_data = [{
@@ -462,27 +481,28 @@ if "df" in st.session_state:
         else:
             st.info("No trades to display")
 
-    with tab4:
+    # Optimizer tab
+    elif selected_tab == "🔬 Optimizer":
         st.subheader("Parameter Optimization")
         st.markdown("""
         Test all combinations of **entries**, **exits**, **filters**, **sessions**, and **days**
         to find the best configuration. Results are ranked by **MAR ratio** (Mean Annual Return / Max Drawdown).
         """)
 
-        # What to optimize - Main toggles
+        # What to optimize - Main toggles (use session state keys to persist)
         st.markdown("##### What to Optimize")
         col1, col2, col3, col4, col5 = st.columns(5)
 
         with col1:
-            opt_entries = st.checkbox("Entries", value=False, help="Test entry pattern combinations")
+            opt_entries = st.checkbox("Entries", value=False, help="Test entry pattern combinations", key="opt_entries_main")
         with col2:
-            opt_exits = st.checkbox("Exits", value=False, help="Test TP ratios and N-bars exit")
+            opt_exits = st.checkbox("Exits", value=False, help="Test TP ratios and N-bars exit", key="opt_exits_main")
         with col3:
-            opt_ma = st.checkbox("MA Filter", value=True, help="Test MA 50/200 filter options")
+            opt_ma = st.checkbox("MA Filter", value=True, help="Test MA 50/200 filter options", key="opt_ma_main")
         with col4:
-            opt_sessions = st.checkbox("Sessions", value=True, help="Test session combinations")
+            opt_sessions = st.checkbox("Sessions", value=True, help="Test session combinations", key="opt_sessions_main")
         with col5:
-            opt_days = st.checkbox("Days", value=False, help="Test day of week combinations")
+            opt_days = st.checkbox("Days", value=False, help="Test day of week combinations", key="opt_days_main")
 
         # Detailed options in expanders
         # Entry pattern options
