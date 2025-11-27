@@ -1,0 +1,288 @@
+//@version=6
+strategy('Algo Strategy Builder', overlay = true, initial_capital=100000, margin_long=0,margin_short=0, pyramiding=1, calc_on_order_fills=false, calc_on_every_tick=false, use_bar_magnifier = true, commission_type=strategy.commission.cash_per_contract, commission_value=1.5, slippage=1)
+
+// ============================================
+// INPUTS GENERALES
+// ============================================
+
+// Configuración básica
+entry_pip = input.int(1, 'Pips para entrada',     minval = 1, group = 'Configuración Básica') // Buffer de pips para colocar la orden stop de entrada.
+sl_pip    = input.int(1, 'Pips para Stop Loss',   minval = 1, group = 'Configuración Básica') // Margen adicional para el Stop Loss (sumado a la lógica base) en pips.
+
+// Sentido
+grpStrat = '*************** Sentido ***************'
+operar_largos = input.bool(true,  'Largos', group=grpStrat)
+operar_cortos = input.bool(true,  'Cortos', group=grpStrat)
+
+// Patrones de entrada
+grpPat = '*************** Entradas ***************'
+usar_patron_sacudida        = input.bool(true,  'Sacudida',          group=grpPat)
+usar_patron_envolvente      = input.bool(true,  'Envolvente',        group=grpPat)
+usar_patron_vol_climatico   = input.bool(false, 'Volumen climático', group=grpPat)
+
+// Comportamientos de salida
+grpSalidas = '*************** Salidas ***************'
+usar_sl_original      = input.bool(true,  'SL Original',       group=grpSalidas)
+usar_salida_tp_ratio  = input.bool(true,  'TP por Ratio',      group=grpSalidas)
+target_ratio          = input.float(1.0,  'Ratio Take Profit', minval = 0.1, step = 0.1, group=grpSalidas)
+usar_salida_n_velas   = input.bool(false, 'Salida por N velas', group=grpSalidas)
+n_velas_salida        = input.int(5, 'Número de velas', minval=1, group=grpSalidas)
+
+// Filtros
+grpFiltros = '*************** Filtros ***************'
+filtro_mm50200 = input.string(defval='Sin filtro', title='Cruce MM 50/200', options=['Sin filtro','Alcista (MM50>200)','Bajista (MM50<200)'], group=grpFiltros)
+
+// Sesiones de negociación
+groupSes   = '*************** Sesiones de negociación ***************'
+usarLondon = input.bool(true,  'London',   group = groupSes)
+usarNewYork= input.bool(true,  'New York', group = groupSes)
+usarTokio  = input.bool(true,  'Tokio',    group = groupSes)
+
+// Días de la semana
+grpDay = '*************** Día de la semana ***************'
+operarLunes     = input.bool(true, 'Lunes',     group = grpDay)
+operarMartes    = input.bool(true, 'Martes',    group = grpDay)
+operarMiercoles = input.bool(true, 'Miércoles', group = grpDay)
+operarJueves    = input.bool(true, 'Jueves',    group = grpDay)
+operarViernes   = input.bool(true, 'Viernes',   group = grpDay)
+operarSabado    = input.bool(true, 'Sábado',    group = grpDay)
+operarDomingo   = input.bool(true, 'Domingo',   group = grpDay)
+
+// Gestión del riesgo
+grpRisk = '*************** Gestión de riesgo ***************'
+tipo_gestion = input.string(defval='Tamaño fijo', title='Tipo de gestión de riesgo', group=grpRisk, options=['Tamaño fijo', 'Riesgo monetario fijo', 'Riesgo % equity'])
+
+tamano_fijo_qty    = input.float(1.0,   'Tamaño fijo',             minval=0.0,    step=0.0001, group=grpRisk)
+riesgo_monetario   = input.float(100.0, 'Riesgo monetario',        minval=0.0,    step=1.0,    group=grpRisk)
+porc_riesgo_equity = input.float(1.0,   'Porcentaje de equity (%)',minval=0.0,    step=0.1,    group=grpRisk)
+qty_step           = input.float(1.0,   'Paso de cantidad',        minval=0.0001, step=0.0001, group=grpRisk, tooltip='Granularidad: 1 (futuros); 0.1/0.01 si el broker admite fracciones.')
+qty_min            = input.float(1.0,   'Cantidad mínima',         minval=0.0,    step=0.0001, group=grpRisk, tooltip='Si el tamaño calculado queda por debajo, no se entra.')
+
+// ==============================
+//  CONFIGURACIÓN
+// ==============================
+
+// Días de la semana
+operarHoy() =>
+    bool operar = false
+    if (dayofweek == dayofweek.monday    and operarLunes)     or
+       (dayofweek == dayofweek.tuesday   and operarMartes)    or
+       (dayofweek == dayofweek.wednesday and operarMiercoles) or
+       (dayofweek == dayofweek.thursday  and operarJueves)    or
+       (dayofweek == dayofweek.friday    and operarViernes)   or
+       (dayofweek == dayofweek.saturday  and operarSabado)    or
+       (dayofweek == dayofweek.sunday    and operarDomingo)
+        operar := true
+    operar
+
+// Sesiones de negociación
+enHorario1 = not na(time(timeframe.period, '0100-0815')) // London
+enHorario2 = not na(time(timeframe.period, '0815-1545')) // New York
+enHorario3 = not na(time(timeframe.period, '1545-0100')) // Tokio
+filtro_ok_horario = (usarLondon and enHorario1) or (usarNewYork and enHorario2) or (usarTokio and enHorario3)
+
+// Función pip
+GetPipSize() => syminfo.mintick * (syminfo.type == 'forex' ? 10 : 1)
+
+// ============================================
+// PATRONES DE ENTRADA
+// ============================================
+
+// ====== Sacudida  ======
+sacudida_long_condition() =>
+    vela2_bajista        = close[1] < open[1]
+    vela2_rompe_minimo   = low[1]   < low[2]
+    vela3_alcista        = close    > open
+    vela3_confirmacion   = close    > low[2]
+    vela2_bajista and vela2_rompe_minimo and vela3_alcista and vela3_confirmacion
+
+sacudida_short_condition() =>
+    vela2_alcista        = close[1] > open[1]
+    vela2_rompe_maximo   = high[1]  > high[2]
+    vela3_bajista        = close    < open
+    vela3_confirmacion   = close    < high[2]
+    vela2_alcista and vela2_rompe_maximo and vela3_bajista and vela3_confirmacion
+
+// ====== Envolvente ======
+bullEngulf() =>
+    VelaAlcista = close > open
+    VelaBajistaPrev = close[1] < open[1]
+    cierra_sobre_ap1 = close >= open[1]
+    abre_bajo_c1     = open  <= close[1]
+    VelaAlcista and VelaBajistaPrev and cierra_sobre_ap1 and abre_bajo_c1
+
+bearEngulf() =>
+    VelaBajista = close < open
+    VelaAlcistaPrev = close[1] > open[1]
+    cierra_bajo_ap1  = close <= open[1]
+    abre_sobre_c1    = open  >= close[1]
+    VelaBajista and VelaAlcistaPrev and cierra_bajo_ap1 and abre_sobre_c1
+
+// ====== Volumen climático ======
+volMA20        = ta.sma(volume, 20)
+volClimatico   = not na(volMA20) and volume > volMA20 * 1.75  // volumen climático: > 1.75 × media 20
+clim_long_raw  = volClimatico and close > open                // vela alcista + volumen climático
+clim_short_raw = volClimatico and close < open                // vela bajista + volumen climático
+
+// Flags para saber si la señal actual viene de volumen climático
+isVolClimLongNow  = usar_patron_vol_climatico and clim_long_raw
+isVolClimShortNow = usar_patron_vol_climatico and clim_short_raw
+
+// ============================================
+// *************** FILTROS ***************
+// ============================================
+sma50  = ta.sma(close, 50)
+sma200 = ta.sma(close, 200)
+filtro_ok_mm = filtro_mm50200 == 'Sin filtro' ? true : filtro_mm50200 == 'Alcista (MM50>200)' ? (sma50 > sma200) : (sma50 < sma200)
+
+// ============================================
+// GESTIÓN DE RIESGO 
+// ============================================
+f_floor_step(x, step) =>
+    step > 0 ? math.floor(x / step) * step : x
+
+f_get_risk_money() =>
+    // Devuelve el capital a arriesgar según el modo
+    float rm = na
+    if tipo_gestion == 'Riesgo % equity'
+        eq = strategy.equity
+        rm := eq > 0 ? (eq * (porc_riesgo_equity / 100.0)) : na
+    else if tipo_gestion == 'Riesgo monetario fijo'
+        rm := riesgo_monetario
+    rm
+
+f_calc_qty(_entry, _sl, _risk_money) =>
+    dist  = math.abs(_entry - _sl)
+    valid = not na(dist) and dist > 0 and not na(_risk_money) and _risk_money > 0 and syminfo.pointvalue > 0
+    raw   = valid ? (_risk_money / (dist * syminfo.pointvalue)) : na
+    f_floor_step(raw, qty_step)
+
+// ============================================
+// GESTIÓN DE LA POSICIÓN
+// ============================================
+
+// Señales (incluyendo volumen climático como posible gatillo)
+bull_signal_raw =
+     (usar_patron_sacudida        and sacudida_long_condition()) or
+     (usar_patron_envolvente      and bullEngulf())              or
+     (usar_patron_vol_climatico   and clim_long_raw)
+
+bear_signal_raw =
+     (usar_patron_sacudida        and sacudida_short_condition()) or
+     (usar_patron_envolvente      and bearEngulf())               or
+     (usar_patron_vol_climatico   and clim_short_raw)
+
+long_ok  = operar_largos and operarHoy() and filtro_ok_horario and filtro_ok_mm and bull_signal_raw
+short_ok = operar_cortos and operarHoy() and filtro_ok_horario and filtro_ok_mm and bear_signal_raw
+
+// Variables de gestión
+var float stoplossL = na
+var float targetL   = na
+var float stoplossS = na
+var float targetS   = na
+var int   barsSinceEntry = na
+
+// Reset / avance del contador
+newLong  = strategy.position_size > 0 and strategy.position_size[1] <= 0
+newShort = strategy.position_size < 0 and strategy.position_size[1] >= 0
+if newLong or newShort
+    barsSinceEntry := 0
+else if strategy.position_size != 0
+    barsSinceEntry := nz(barsSinceEntry) + 1
+else
+    barsSinceEntry := na
+
+// Bases para SL
+sllow  = ta.lowest(low,  2)   // base SL largos
+slhigh = ta.highest(high, 2)  // base SL cortos
+
+// LARGOS
+if long_ok and strategy.position_size <= 0
+    bool  isVolClimLong = isVolClimLongNow
+    float entry_price_L = na
+
+    // Si la señal viene de volumen climático → orden a mercado (se ejecuta en la apertura de la siguiente vela)
+    // Si viene de sacudida/envolvente → orden stop por encima del máximo + buffer
+    if isVolClimLong
+        entry_price_L := close    // precio de referencia para riesgo/TP
+    else
+        entry_price_L := high + entry_pip * GetPipSize()
+
+    sl_theo_L = sllow - sl_pip * GetPipSize()
+
+    // SL / TP
+    if usar_sl_original
+        stoplossL := sl_theo_L
+    if usar_salida_tp_ratio
+        riesgoL = entry_price_L - sl_theo_L
+        targetL := entry_price_L + riesgoL * target_ratio
+    else
+        targetL := na
+
+    // ===== Tamaño según gestión seleccionada =====
+    float qtyL_val = na
+    if tipo_gestion == 'Tamaño fijo'
+        qtyL_val := tamano_fijo_qty
+    else
+        float risk_money_L = f_get_risk_money()
+        qtyL_val := f_calc_qty(entry_price_L, sl_theo_L, risk_money_L)
+
+    qtyL_ok  = not na(qtyL_val) and qtyL_val >= qty_min and qtyL_val > 0
+
+    float stopPriceL = isVolClimLong ? na : entry_price_L  // na ⇒ orden a mercado
+
+    if qtyL_ok
+        strategy.entry('Long Entry', strategy.long, qty=qtyL_val, stop=stopPriceL)
+
+// CORTOS
+if short_ok and strategy.position_size >= 0
+    bool  isVolClimShort = isVolClimShortNow
+    float entry_price_S  = na
+
+    // Volumen climático → mercado; resto → stop por debajo del mínimo - buffer
+    if isVolClimShort
+        entry_price_S := close
+    else
+        entry_price_S := low - entry_pip * GetPipSize()
+
+    sl_theo_S = slhigh + sl_pip * GetPipSize()
+
+    // SL / TP
+    if usar_sl_original
+        stoplossS := sl_theo_S
+    if usar_salida_tp_ratio
+        riesgoS = sl_theo_S - entry_price_S
+        targetS := entry_price_S - riesgoS * target_ratio
+    else
+        targetS := na
+
+    // ===== Tamaño según gestión seleccionada =====
+    float qtyS_val = na
+    if tipo_gestion == 'Tamaño fijo'
+        qtyS_val := tamano_fijo_qty
+    else
+        float risk_money_S = f_get_risk_money()
+        qtyS_val := f_calc_qty(entry_price_S, sl_theo_S, risk_money_S)
+
+    qtyS_ok  = not na(qtyS_val) and qtyS_val >= qty_min and qtyS_val > 0
+
+    float stopPriceS = isVolClimShort ? na : entry_price_S
+
+    if qtyS_ok
+        strategy.entry('Short Entry', strategy.short, qty=qtyS_val, stop=stopPriceS)
+
+// Salidas
+strategy.exit('Long Exit',  from_entry='Long Entry',  stop=usar_sl_original ? stoplossL : na, limit=usar_salida_tp_ratio ? targetL : na)
+strategy.exit('Short Exit', from_entry='Short Entry', stop=usar_sl_original ? stoplossS : na, limit=usar_salida_tp_ratio ? targetS : na)
+
+// Cierre por N velas
+if usar_salida_n_velas and strategy.position_size > 0 and not na(barsSinceEntry) and barsSinceEntry >= n_velas_salida
+    strategy.close('Long Entry',  comment='Exit N velas (L)')
+if usar_salida_n_velas and strategy.position_size < 0 and not na(barsSinceEntry) and barsSinceEntry >= n_velas_salida
+    strategy.close('Short Entry', comment='Exit N velas (S)')
+
+// Cancelar si precio toca SL antes de entrar (si hay SL configurado) — se mantiene la lógica original
+if strategy.position_size <= 0 and low < stoplossL
+    strategy.cancel('Long Entry')
+if strategy.position_size >= 0 and high > stoplossS
+    strategy.cancel('Short Entry')
