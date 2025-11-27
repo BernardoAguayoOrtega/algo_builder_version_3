@@ -224,6 +224,10 @@ if "universal_parsed" not in st.session_state:
                     input_values[var_name] = inp.default_value
                 st.session_state["pine_input_values"] = input_values
 
+                # Reset optimizer params for new file
+                st.session_state.pop("opt_params", None)
+                st.session_state.pop("dyn_opt_results", None)
+
                 st.rerun()
 
             except Exception as e:
@@ -245,7 +249,12 @@ with st.expander(f"📄 **{parsed.name}** (v{parsed.version}) - {parsed.total_in
         st.metric("Indicators", len(parsed.indicators))
     with col4:
         if st.button("🗑️ Clear & Upload New"):
-            for key in ["universal_parsed", "universal_summary", "pine_input_values", "df", "result"]:
+            # Clear all strategy-related state including optimizer
+            keys_to_clear = [
+                "universal_parsed", "universal_summary", "pine_input_values",
+                "df", "result", "opt_params", "dyn_opt_results", "opt_results"
+            ]
+            for key in keys_to_clear:
                 st.session_state.pop(key, None)
             st.rerun()
 
@@ -602,10 +611,6 @@ if "df" in st.session_state:
     # Optimizer tab - Dynamic based on Pine Script inputs
     elif selected_tab == "🔬 Optimizer":
         st.subheader("Parameter Optimization")
-        st.markdown(f"""
-        Optimize parameters from **{parsed.name}**. Select which inputs to vary
-        and the values to test. Results ranked by **MAR ratio**.
-        """)
 
         # Initialize dynamic optimizer params if not exists
         if "opt_params" not in st.session_state:
@@ -613,97 +618,191 @@ if "df" in st.session_state:
 
         opt_params = st.session_state["opt_params"]
 
-        # Group inputs by type for better organization
-        bool_inputs = {k: v for k, v in opt_params.items() if v.input_type == InputType.BOOL}
-        float_inputs = {k: v for k, v in opt_params.items() if v.input_type == InputType.FLOAT}
-        int_inputs = {k: v for k, v in opt_params.items() if v.input_type == InputType.INT}
-        string_inputs = {k: v for k, v in opt_params.items() if v.input_type == InputType.STRING}
+        # Organize params by their Pine Script group
+        params_by_group = {}
+        for var_name, param in opt_params.items():
+            inp = parsed.inputs.get(var_name)
+            group = inp.group if inp and inp.group else "Other"
+            # Clean up group name
+            display_group = group.replace("grp", "").replace("group", "").strip()
+            if display_group.startswith("***"):
+                display_group = display_group.strip("*").strip()
+            if not display_group:
+                display_group = "Other"
+            if display_group not in params_by_group:
+                params_by_group[display_group] = []
+            params_by_group[display_group].append((var_name, param))
 
+        # Calculate combinations for each param
+        def get_param_combos(param):
+            return len(param.values_to_test) if param.values_to_test else 1
+
+        # ===== Quick Presets =====
+        st.markdown("##### Quick Presets")
+        preset_cols = st.columns(5)
+
+        def apply_preset(preset_func):
+            """Apply a preset and update both opt_params and widget state."""
+            for var_name, param in opt_params.items():
+                enabled = preset_func(var_name, param)
+                param.enabled = enabled
+                # Also update the widget state key
+                widget_key = f"opt_{var_name}"
+                st.session_state[widget_key] = enabled
+
+        with preset_cols[0]:
+            if st.button("🎯 Key Params", help="Optimize most impactful: TP Ratio, MA Filter"):
+                def key_params_preset(var_name, param):
+                    label_lower = param.label.lower()
+                    return any(kw in label_lower for kw in ["ratio", "filtro", "filter", "trend"])
+                apply_preset(key_params_preset)
+                st.rerun()
+
+        with preset_cols[1]:
+            if st.button("📊 All Numeric", help="Optimize all float and int parameters"):
+                def numeric_preset(var_name, param):
+                    return param.input_type in [InputType.FLOAT, InputType.INT]
+                apply_preset(numeric_preset)
+                st.rerun()
+
+        with preset_cols[2]:
+            if st.button("🔀 All Options", help="Optimize all dropdown options"):
+                def options_preset(var_name, param):
+                    inp = parsed.inputs.get(var_name)
+                    return param.input_type == InputType.STRING and inp and bool(inp.options)
+                apply_preset(options_preset)
+                st.rerun()
+
+        with preset_cols[3]:
+            if st.button("✅ Select All", help="Enable all parameters"):
+                apply_preset(lambda vn, p: True)
+                st.rerun()
+
+        with preset_cols[4]:
+            if st.button("❌ Clear All", help="Disable all parameters"):
+                apply_preset(lambda vn, p: False)
+                st.rerun()
+
+        st.markdown("---")
+
+        # ===== Parameters by Group =====
         st.markdown("##### Select Parameters to Optimize")
 
-        # Boolean inputs (checkboxes - test True/False)
-        if bool_inputs:
-            with st.expander(f"**Boolean Inputs** ({len(bool_inputs)} available)", expanded=True):
-                cols = st.columns(min(3, len(bool_inputs)))
-                for i, (var_name, param) in enumerate(bool_inputs.items()):
-                    with cols[i % len(cols)]:
-                        param.enabled = st.checkbox(
-                            param.label,
-                            value=param.enabled,
-                            key=f"opt_bool_{var_name}",
-                            help=f"Test both True and False for '{param.label}'"
-                        )
+        # Priority groups (show expanded), others collapsed
+        priority_groups = ["Salidas", "Filtros", "Exits", "Filters", "Other"]
 
-        # Float inputs (numeric ranges)
-        if float_inputs:
-            with st.expander(f"**Float Inputs** ({len(float_inputs)} available)", expanded=True):
-                for var_name, param in float_inputs.items():
-                    col1, col2 = st.columns([1, 3])
-                    with col1:
-                        param.enabled = st.checkbox(
-                            param.label,
-                            value=param.enabled,
-                            key=f"opt_float_cb_{var_name}"
-                        )
-                    with col2:
-                        if param.enabled:
-                            values_str = st.text_input(
-                                f"Values for {param.label}",
-                                value=", ".join(str(v) for v in param.values_to_test),
-                                key=f"opt_float_vals_{var_name}",
-                                help="Comma-separated values to test"
-                            )
-                            try:
-                                param.values_to_test = [float(x.strip()) for x in values_str.split(",") if x.strip()]
-                            except ValueError:
-                                st.error(f"Invalid values for {param.label}")
+        for group_name, group_params in params_by_group.items():
+            is_priority = any(pg.lower() in group_name.lower() for pg in priority_groups)
+            total_count = len(group_params)
 
-        # Integer inputs (numeric ranges)
-        if int_inputs:
-            with st.expander(f"**Integer Inputs** ({len(int_inputs)} available)", expanded=True):
-                for var_name, param in int_inputs.items():
-                    col1, col2 = st.columns([1, 3])
-                    with col1:
-                        param.enabled = st.checkbox(
-                            param.label,
-                            value=param.enabled,
-                            key=f"opt_int_cb_{var_name}"
-                        )
-                    with col2:
-                        if param.enabled:
-                            values_str = st.text_input(
-                                f"Values for {param.label}",
-                                value=", ".join(str(v) for v in param.values_to_test),
-                                key=f"opt_int_vals_{var_name}",
-                                help="Comma-separated values to test"
-                            )
-                            try:
-                                param.values_to_test = [int(x.strip()) for x in values_str.split(",") if x.strip()]
-                            except ValueError:
-                                st.error(f"Invalid values for {param.label}")
+            # Calculate enabled count and combinations using session state
+            enabled_count = 0
+            group_combos = 1
+            for vn, p in group_params:
+                is_enabled = st.session_state.get(f"opt_{vn}", p.enabled)
+                if is_enabled:
+                    enabled_count += 1
+                    group_combos *= get_param_combos(p)
 
-        # String inputs with options (dropdowns)
-        if string_inputs:
-            with st.expander(f"**String Inputs** ({len(string_inputs)} available)", expanded=True):
-                for var_name, param in string_inputs.items():
-                    inp = parsed.inputs[var_name]
-                    if inp.options:
-                        col1, col2 = st.columns([1, 3])
+            header = f"**{group_name}** ({enabled_count}/{total_count} selected)"
+            if enabled_count > 0:
+                header += f" → {group_combos:,} combinations"
+
+            with st.expander(header, expanded=is_priority and total_count <= 6):
+                for var_name, param in group_params:
+                    inp = parsed.inputs.get(var_name)
+                    combos = get_param_combos(param)
+                    widget_key = f"opt_{var_name}"
+
+                    # Get current enabled state (prefer session state if set by preset)
+                    current_enabled = st.session_state.get(widget_key, param.enabled)
+
+                    # Different UI based on type
+                    if param.input_type == InputType.BOOL:
+                        col1, col2 = st.columns([3, 1])
                         with col1:
                             param.enabled = st.checkbox(
-                                param.label,
-                                value=param.enabled,
-                                key=f"opt_str_cb_{var_name}"
+                                f"{param.label}",
+                                value=current_enabled,
+                                key=widget_key,
+                                help=f"Test True/False (×2 combinations)"
                             )
                         with col2:
                             if param.enabled:
-                                selected_options = st.multiselect(
-                                    f"Options for {param.label}",
+                                st.caption("True, False")
+
+                    elif param.input_type == InputType.FLOAT:
+                        col1, col2 = st.columns([1, 2])
+                        with col1:
+                            param.enabled = st.checkbox(
+                                param.label,
+                                value=current_enabled,
+                                key=widget_key
+                            )
+                        with col2:
+                            default_vals = ", ".join(f"{v:.2f}" for v in param.values_to_test[:5])
+                            if len(param.values_to_test) > 5:
+                                default_vals += "..."
+                            if param.enabled:
+                                values_str = st.text_input(
+                                    "Values",
+                                    value=", ".join(str(v) for v in param.values_to_test),
+                                    key=f"opt_vals_{var_name}",
+                                    label_visibility="collapsed"
+                                )
+                                try:
+                                    param.values_to_test = [float(x.strip()) for x in values_str.split(",") if x.strip()]
+                                except ValueError:
+                                    st.error("Invalid")
+                            else:
+                                st.caption(f"💡 {default_vals}")
+
+                    elif param.input_type == InputType.INT:
+                        col1, col2 = st.columns([1, 2])
+                        with col1:
+                            param.enabled = st.checkbox(
+                                param.label,
+                                value=current_enabled,
+                                key=widget_key
+                            )
+                        with col2:
+                            default_vals = ", ".join(str(v) for v in param.values_to_test[:5])
+                            if len(param.values_to_test) > 5:
+                                default_vals += "..."
+                            if param.enabled:
+                                values_str = st.text_input(
+                                    "Values",
+                                    value=", ".join(str(v) for v in param.values_to_test),
+                                    key=f"opt_vals_{var_name}",
+                                    label_visibility="collapsed"
+                                )
+                                try:
+                                    param.values_to_test = [int(x.strip()) for x in values_str.split(",") if x.strip()]
+                                except ValueError:
+                                    st.error("Invalid")
+                            else:
+                                st.caption(f"💡 {default_vals}")
+
+                    elif param.input_type == InputType.STRING and inp and inp.options:
+                        col1, col2 = st.columns([1, 2])
+                        with col1:
+                            param.enabled = st.checkbox(
+                                param.label,
+                                value=current_enabled,
+                                key=widget_key
+                            )
+                        with col2:
+                            if param.enabled:
+                                selected = st.multiselect(
+                                    "Options",
                                     options=inp.options,
                                     default=param.values_to_test if param.values_to_test else inp.options,
-                                    key=f"opt_str_opts_{var_name}"
+                                    key=f"opt_opts_{var_name}",
+                                    label_visibility="collapsed"
                                 )
-                                param.values_to_test = selected_options if selected_options else inp.options
+                                param.values_to_test = selected if selected else inp.options
+                            else:
+                                st.caption(f"💡 {len(inp.options)} options")
 
         # Build dynamic settings
         dyn_settings = DynamicOptimizationSettings(params=opt_params)
