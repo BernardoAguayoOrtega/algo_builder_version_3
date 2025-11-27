@@ -15,12 +15,13 @@ from datetime import datetime, timedelta
 from src.data import fetch_data, get_symbol_info, get_available_timeframes, TIMEFRAME_LIMITS
 from src.strategy import StrategyConfig
 from src.backtester import run_backtest, BacktestResult
-from src.optimizer import (
-    run_optimization, results_to_dataframe, OptimizationSettings,
-    estimate_combinations, get_settings_description
-)
+from src.optimizer import run_optimization, results_to_dataframe
 from src.pine_parser import parse_universal, get_universal_summary, InputType
 from src.pine_parser.exceptions import ValidationError
+from src.dynamic_optimizer import (
+    create_optimizable_params, DynamicOptimizationSettings, OptimizableParam,
+    generate_dynamic_combinations, get_param_summary
+)
 
 
 # Page config
@@ -598,218 +599,247 @@ if "df" in st.session_state:
         else:
             st.info("No trades to display")
 
-    # Optimizer tab
+    # Optimizer tab - Dynamic based on Pine Script inputs
     elif selected_tab == "🔬 Optimizer":
         st.subheader("Parameter Optimization")
-        st.markdown("""
-        Test combinations of **entries**, **exits**, **filters**, **sessions**, and **days**
-        to find the best configuration. Results ranked by **MAR ratio**.
+        st.markdown(f"""
+        Optimize parameters from **{parsed.name}**. Select which inputs to vary
+        and the values to test. Results ranked by **MAR ratio**.
         """)
 
-        st.markdown("##### What to Optimize")
-        col1, col2, col3, col4, col5 = st.columns(5)
+        # Initialize dynamic optimizer params if not exists
+        if "opt_params" not in st.session_state:
+            st.session_state["opt_params"] = create_optimizable_params(parsed)
 
+        opt_params = st.session_state["opt_params"]
+
+        # Group inputs by type for better organization
+        bool_inputs = {k: v for k, v in opt_params.items() if v.input_type == InputType.BOOL}
+        float_inputs = {k: v for k, v in opt_params.items() if v.input_type == InputType.FLOAT}
+        int_inputs = {k: v for k, v in opt_params.items() if v.input_type == InputType.INT}
+        string_inputs = {k: v for k, v in opt_params.items() if v.input_type == InputType.STRING}
+
+        st.markdown("##### Select Parameters to Optimize")
+
+        # Boolean inputs (checkboxes - test True/False)
+        if bool_inputs:
+            with st.expander(f"**Boolean Inputs** ({len(bool_inputs)} available)", expanded=True):
+                cols = st.columns(min(3, len(bool_inputs)))
+                for i, (var_name, param) in enumerate(bool_inputs.items()):
+                    with cols[i % len(cols)]:
+                        param.enabled = st.checkbox(
+                            param.label,
+                            value=param.enabled,
+                            key=f"opt_bool_{var_name}",
+                            help=f"Test both True and False for '{param.label}'"
+                        )
+
+        # Float inputs (numeric ranges)
+        if float_inputs:
+            with st.expander(f"**Float Inputs** ({len(float_inputs)} available)", expanded=True):
+                for var_name, param in float_inputs.items():
+                    col1, col2 = st.columns([1, 3])
+                    with col1:
+                        param.enabled = st.checkbox(
+                            param.label,
+                            value=param.enabled,
+                            key=f"opt_float_cb_{var_name}"
+                        )
+                    with col2:
+                        if param.enabled:
+                            values_str = st.text_input(
+                                f"Values for {param.label}",
+                                value=", ".join(str(v) for v in param.values_to_test),
+                                key=f"opt_float_vals_{var_name}",
+                                help="Comma-separated values to test"
+                            )
+                            try:
+                                param.values_to_test = [float(x.strip()) for x in values_str.split(",") if x.strip()]
+                            except ValueError:
+                                st.error(f"Invalid values for {param.label}")
+
+        # Integer inputs (numeric ranges)
+        if int_inputs:
+            with st.expander(f"**Integer Inputs** ({len(int_inputs)} available)", expanded=True):
+                for var_name, param in int_inputs.items():
+                    col1, col2 = st.columns([1, 3])
+                    with col1:
+                        param.enabled = st.checkbox(
+                            param.label,
+                            value=param.enabled,
+                            key=f"opt_int_cb_{var_name}"
+                        )
+                    with col2:
+                        if param.enabled:
+                            values_str = st.text_input(
+                                f"Values for {param.label}",
+                                value=", ".join(str(v) for v in param.values_to_test),
+                                key=f"opt_int_vals_{var_name}",
+                                help="Comma-separated values to test"
+                            )
+                            try:
+                                param.values_to_test = [int(x.strip()) for x in values_str.split(",") if x.strip()]
+                            except ValueError:
+                                st.error(f"Invalid values for {param.label}")
+
+        # String inputs with options (dropdowns)
+        if string_inputs:
+            with st.expander(f"**String Inputs** ({len(string_inputs)} available)", expanded=True):
+                for var_name, param in string_inputs.items():
+                    inp = parsed.inputs[var_name]
+                    if inp.options:
+                        col1, col2 = st.columns([1, 3])
+                        with col1:
+                            param.enabled = st.checkbox(
+                                param.label,
+                                value=param.enabled,
+                                key=f"opt_str_cb_{var_name}"
+                            )
+                        with col2:
+                            if param.enabled:
+                                selected_options = st.multiselect(
+                                    f"Options for {param.label}",
+                                    options=inp.options,
+                                    default=param.values_to_test if param.values_to_test else inp.options,
+                                    key=f"opt_str_opts_{var_name}"
+                                )
+                                param.values_to_test = selected_options if selected_options else inp.options
+
+        # Build dynamic settings
+        dyn_settings = DynamicOptimizationSettings(params=opt_params)
+        estimated_combos = dyn_settings.estimate_combinations()
+        enabled_params = dyn_settings.get_enabled_params()
+        enabled_names = [p.label for p in enabled_params.values()]
+
+        st.markdown("---")
+        st.markdown("##### Optimization Settings")
+        col1, col2, col3 = st.columns(3)
         with col1:
-            opt_entries = st.checkbox("Entries", value=False, key="opt_entries_main")
+            max_iterations = st.number_input(
+                "Max Iterations",
+                min_value=10,
+                max_value=50000,
+                value=min(500, max(10, estimated_combos)),
+                step=50,
+                help="Maximum number of parameter combinations to test"
+            )
         with col2:
-            opt_exits = st.checkbox("Exits", value=False, key="opt_exits_main")
+            min_trades = st.number_input(
+                "Min Trades",
+                min_value=1,
+                max_value=100,
+                value=10,
+                help="Minimum trades required for a valid result"
+            )
         with col3:
-            opt_ma = st.checkbox("MA Filter", value=True, key="opt_ma_main")
-        with col4:
-            opt_sessions = st.checkbox("Sessions", value=True, key="opt_sessions_main")
-        with col5:
-            opt_days = st.checkbox("Days", value=False, key="opt_days_main")
+            st.metric("Total Combinations", f"{estimated_combos:,}")
 
-        # Entry options
-        if opt_entries:
-            with st.expander("Entry Patterns to Test", expanded=True):
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    entry_sacudida = st.checkbox("Sacudida", value=True, key="opt_sac")
-                with col2:
-                    entry_engulfing = st.checkbox("Engulfing", value=True, key="opt_eng")
-                with col3:
-                    entry_climatic = st.checkbox("Climatic Vol", value=True, key="opt_clim")
-
-                from itertools import combinations
-                selected_entries = []
-                if entry_sacudida: selected_entries.append(0)
-                if entry_engulfing: selected_entries.append(1)
-                if entry_climatic: selected_entries.append(2)
-
-                entry_options = []
-                for r in range(1, len(selected_entries) + 1):
-                    for combo in combinations(selected_entries, r):
-                        opt = [False, False, False]
-                        for idx in combo:
-                            opt[idx] = True
-                        entry_options.append(tuple(opt))
-                if not entry_options:
-                    entry_options = [(True, True, False)]
+        # Summary
+        if enabled_names:
+            st.info(f"**Optimizing:** {', '.join(enabled_names)} → Testing: {min(max_iterations, estimated_combos):,} combinations")
         else:
-            entry_options = None
+            st.warning("Select at least one parameter to optimize")
 
-        # Exit options
-        if opt_exits:
-            with st.expander("Exit Options to Test", expanded=True):
-                col1, col2 = st.columns(2)
-                with col1:
-                    tp_ratios_str = st.text_input("TP Ratios", value="0.5, 1.0, 1.5, 2.0, 2.5, 3.0")
-                    tp_ratios = [float(x.strip()) for x in tp_ratios_str.split(",") if x.strip()]
-                with col2:
-                    n_bars_str = st.text_input("N-bars exit", value="3, 5, 7, 10, 15")
-                    n_bars_opts = [int(x.strip()) for x in n_bars_str.split(",") if x.strip()]
-        else:
-            tp_ratios = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0]
-            n_bars_opts = [3, 5, 7, 10, 15]
+        run_opt_btn = st.button("🚀 Run Optimization", type="primary", disabled=not enabled_names)
 
-        # MA options
-        if opt_ma:
-            with st.expander("MA Filter Options", expanded=True):
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    ma_sin_filtro = st.checkbox("Sin filtro", value=True, key="ma_off")
-                with col2:
-                    ma_alcista = st.checkbox("Alcista (MM50>200)", value=True, key="ma_bull")
-                with col3:
-                    ma_bajista = st.checkbox("Bajista (MM50<200)", value=True, key="ma_bear")
-
-                ma_filter_options = []
-                if ma_sin_filtro: ma_filter_options.append("Sin filtro")
-                if ma_alcista: ma_filter_options.append("Alcista (MM50>200)")
-                if ma_bajista: ma_filter_options.append("Bajista (MM50<200)")
-                if not ma_filter_options: ma_filter_options = ["Sin filtro"]
-        else:
-            ma_filter_options = None
-
-        # Session options
-        if opt_sessions:
-            with st.expander("Session Options", expanded=True):
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    sess_london = st.checkbox("London", value=True, key="sess_l")
-                with col2:
-                    sess_ny = st.checkbox("New York", value=True, key="sess_ny")
-                with col3:
-                    sess_tokyo = st.checkbox("Tokyo", value=True, key="sess_t")
-
-                from itertools import combinations
-                selected_sessions = []
-                if sess_london: selected_sessions.append(0)
-                if sess_ny: selected_sessions.append(1)
-                if sess_tokyo: selected_sessions.append(2)
-
-                session_options = []
-                for r in range(1, len(selected_sessions) + 1):
-                    for combo in combinations(selected_sessions, r):
-                        opt = [False, False, False]
-                        for idx in combo:
-                            opt[idx] = True
-                        session_options.append(tuple(opt))
-                if not session_options: session_options = [(True, True, True)]
-        else:
-            session_options = None
-
-        # Day options
-        if opt_days:
-            with st.expander("Day Options", expanded=True):
-                cols = st.columns(7)
-                day_vars = []
-                day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-                defaults = [True, True, True, True, True, False, False]
-                for i, (col, name, default) in enumerate(zip(cols, day_names, defaults)):
-                    with col:
-                        day_vars.append(st.checkbox(name, value=default, key=f"day_{i}"))
-
-                from itertools import combinations
-                selected_days = [i for i, v in enumerate(day_vars) if v]
-                day_options = []
-                for r in range(1, len(selected_days) + 1):
-                    for combo in combinations(selected_days, r):
-                        opt = [False] * 7
-                        for idx in combo:
-                            opt[idx] = True
-                        day_options.append(tuple(opt))
-                if not day_options: day_options = [(True, True, True, True, True, False, False)]
-        else:
-            day_options = None
-
-        # Build settings
-        opt_settings = OptimizationSettings(
-            optimize_entries=opt_entries,
-            entry_options=entry_options,
-            optimize_exits=opt_exits,
-            tp_ratio_options=tp_ratios,
-            n_bars_options=n_bars_opts,
-            optimize_ma_filter=opt_ma,
-            ma_filter_options=ma_filter_options,
-            optimize_sessions=opt_sessions,
-            session_options=session_options,
-            optimize_days=opt_days,
-            day_options=day_options,
-        )
-
-        estimated_combos = estimate_combinations(opt_settings)
-        settings_desc = get_settings_description(opt_settings)
-
-        col1, col2 = st.columns(2)
-        with col1:
-            use_max_combos = st.checkbox("Limit combinations", value=estimated_combos > 500)
-        with col2:
-            if use_max_combos:
-                max_combos = st.number_input("Max", min_value=1, max_value=10000,
-                                            value=min(500, estimated_combos), step=50)
-            else:
-                max_combos = None
-
-        min_trades = st.slider("Minimum trades", min_value=1, max_value=100, value=10)
-
-        final_combos = max_combos if max_combos else estimated_combos
-        st.info(f"**{settings_desc}** | ~{estimated_combos:,} combinations → Testing: {final_combos:,}")
-
-        run_opt_btn = st.button("🚀 Run Optimization", type="primary")
-
-        if run_opt_btn:
+        if run_opt_btn and enabled_names:
             with st.spinner("Running optimization..."):
                 progress_bar = st.progress(0)
                 status_text = st.empty()
 
-                def update_opt_progress(current, total, message):
-                    progress_bar.progress(current / total if total > 0 else 0)
-                    status_text.text(message)
-
                 try:
-                    # Build base config from Pine
-                    config = build_config_from_pine()
-                    config.pip_size = pip_size
+                    # Get current input values
+                    base_values = st.session_state.get("pine_input_values", {})
 
-                    opt_results = run_optimization(
-                        df=st.session_state["df"],
-                        base_config=config,
-                        settings=opt_settings,
-                        max_combinations=max_combos,
-                        progress_callback=update_opt_progress,
-                        min_trades=min_trades,
+                    # Generate all combinations
+                    combinations = generate_dynamic_combinations(
+                        base_values, dyn_settings, max_iterations
                     )
-                    st.session_state["opt_results"] = opt_results
+
+                    total = len(combinations)
+                    results = []
+
+                    for i, combo_values in enumerate(combinations):
+                        progress_bar.progress((i + 1) / total)
+                        status_text.text(f"Testing {i + 1}/{total}")
+
+                        # Update session state with combo values temporarily
+                        st.session_state["pine_input_values"] = combo_values
+
+                        # Build config and run backtest
+                        config = build_config_from_pine()
+                        config.pip_size = pip_size
+
+                        result = run_backtest(st.session_state["df"], config)
+
+                        if result.total_trades >= min_trades:
+                            # Calculate MAR ratio
+                            df_data = st.session_state["df"]
+                            date_range = df_data.index[-1] - df_data.index[0]
+                            years = date_range.days / 365.25
+                            if years > 0 and result.max_drawdown_pct != 0:
+                                total_return_pct = (result.total_pnl / config.initial_capital) * 100
+                                annualized_return = total_return_pct / years
+                                mar = annualized_return / abs(result.max_drawdown_pct)
+                            else:
+                                mar = 0.0
+
+                            results.append({
+                                "values": combo_values.copy(),
+                                "summary": get_param_summary(combo_values, enabled_params),
+                                "trades": result.total_trades,
+                                "win_rate": result.win_rate,
+                                "pnl": result.total_pnl,
+                                "profit_factor": result.profit_factor,
+                                "max_dd": result.max_drawdown_pct,
+                                "sharpe": result.sharpe_ratio,
+                                "mar": mar,
+                            })
+
+                    # Restore original values
+                    st.session_state["pine_input_values"] = base_values
+
+                    # Sort by MAR
+                    results.sort(key=lambda x: x["mar"], reverse=True)
+                    st.session_state["dyn_opt_results"] = results
+
                     progress_bar.empty()
                     status_text.empty()
 
-                    if opt_results:
-                        st.success(f"Found {len(opt_results)} valid configurations!")
+                    if results:
+                        st.success(f"Found {len(results)} valid configurations!")
                     else:
                         st.warning("No configurations met the minimum trade requirement.")
+
                 except Exception as e:
                     st.error(f"Error: {e}")
                     progress_bar.empty()
                     status_text.empty()
+                    # Restore original values
+                    st.session_state["pine_input_values"] = base_values
 
-        # Display results
-        if "opt_results" in st.session_state and st.session_state["opt_results"]:
-            opt_results = st.session_state["opt_results"]
+        # Display dynamic optimization results
+        if "dyn_opt_results" in st.session_state and st.session_state["dyn_opt_results"]:
+            results = st.session_state["dyn_opt_results"]
 
             st.subheader("Top Configurations")
-            results_df = results_to_dataframe(opt_results)
+
+            # Build results dataframe
+            results_data = []
+            for i, r in enumerate(results[:50], 1):  # Top 50
+                results_data.append({
+                    "Rank": i,
+                    "Configuration": r["summary"],
+                    "Trades": r["trades"],
+                    "Win Rate": f"{r['win_rate']:.1%}",
+                    "Net P&L": f"${r['pnl']:,.2f}",
+                    "Profit Factor": f"{r['profit_factor']:.2f}",
+                    "Max DD %": f"{r['max_dd']:.1f}%",
+                    "Sharpe": f"{r['sharpe']:.2f}",
+                    "MAR": f"{r['mar']:.2f}",
+                })
+
+            results_df = pd.DataFrame(results_data)
             st.dataframe(results_df, hide_index=True)
 
             st.download_button(
@@ -822,14 +852,14 @@ if "df" in st.session_state:
             st.subheader("Apply Configuration")
             selected_rank = st.selectbox(
                 "Select configuration",
-                options=list(range(len(opt_results))),
-                format_func=lambda i: f"#{i+1}: {opt_results[i].config_summary} (MAR: {opt_results[i].mar_ratio:.2f})",
+                options=list(range(min(50, len(results)))),
+                format_func=lambda i: f"#{i+1}: {results[i]['summary']} (MAR: {results[i]['mar']:.2f})",
             )
 
             if st.button("✅ Apply Selected"):
-                selected_config = opt_results[selected_rank].config
-                st.session_state["applied_opt_config"] = selected_config
-                st.success(f"Configuration #{selected_rank + 1} applied!")
+                selected_values = results[selected_rank]["values"]
+                st.session_state["pine_input_values"] = selected_values
+                st.success(f"Configuration #{selected_rank + 1} applied! Sidebar values updated.")
 
 else:
     # No data loaded yet
