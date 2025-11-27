@@ -812,13 +812,21 @@ if "df" in st.session_state:
 
         st.markdown("---")
         st.markdown("##### Optimization Settings")
+
+        # Warning for too many combinations
+        MAX_REASONABLE_COMBOS = 100000
+        too_many_combos = estimated_combos > MAX_REASONABLE_COMBOS
+
+        if too_many_combos:
+            st.error(f"⚠️ **Too many combinations!** ({estimated_combos:,}) - Please select fewer parameters or reduce test values. Max recommended: {MAX_REASONABLE_COMBOS:,}")
+
         col1, col2, col3 = st.columns(3)
         with col1:
             max_iterations = st.number_input(
                 "Max Iterations",
                 min_value=10,
-                max_value=50000,
-                value=min(500, max(10, estimated_combos)),
+                max_value=10000,
+                value=min(500, max(10, estimated_combos if estimated_combos < 10000 else 500)),
                 step=50,
                 help="Maximum number of parameter combinations to test"
             )
@@ -831,15 +839,25 @@ if "df" in st.session_state:
                 help="Minimum trades required for a valid result"
             )
         with col3:
-            st.metric("Total Combinations", f"{estimated_combos:,}")
+            if estimated_combos > 1000000:
+                st.metric("Total Combinations", f"{estimated_combos/1e6:.1f}M", delta="Too many!", delta_color="inverse")
+            elif estimated_combos > 1000:
+                st.metric("Total Combinations", f"{estimated_combos/1e3:.1f}K")
+            else:
+                st.metric("Total Combinations", f"{estimated_combos:,}")
 
         # Summary
         if enabled_names:
-            st.info(f"**Optimizing:** {', '.join(enabled_names)} → Testing: {min(max_iterations, estimated_combos):,} combinations")
+            names_display = ", ".join(enabled_names[:5])
+            if len(enabled_names) > 5:
+                names_display += f" +{len(enabled_names)-5} more"
+            st.info(f"**Optimizing:** {names_display} → Testing: {min(max_iterations, estimated_combos):,} combinations")
         else:
             st.warning("Select at least one parameter to optimize")
 
-        run_opt_btn = st.button("🚀 Run Optimization", type="primary", disabled=not enabled_names)
+        # Disable button if too many combos or no params
+        can_run = enabled_names and not too_many_combos
+        run_opt_btn = st.button("🚀 Run Optimization", type="primary", disabled=not can_run)
 
         if run_opt_btn and enabled_names:
             with st.spinner("Running optimization..."):
