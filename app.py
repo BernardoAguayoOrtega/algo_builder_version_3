@@ -632,23 +632,25 @@ def create_chart_with_trades(df: pd.DataFrame, result: BacktestResult, symbol: s
     )
 
 
-@st.cache_data(ttl=300, show_spinner=False)
-def create_equity_chart_cached(equity_index: list, equity_values: list):
-    """Create standalone equity curve chart (cached)."""
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=equity_index, y=equity_values, mode="lines",
-                            name="Equity", fill="tozeroy", line=dict(color="#2196f3", width=2)))
-    fig.update_layout(height=300, template="plotly_dark", title="Equity Curve",
-                     xaxis_title="Date", yaxis_title="Equity ($)")
-    return fig
-
-
 def create_equity_chart(result: BacktestResult):
-    """Wrapper for cached equity chart."""
-    return create_equity_chart_cached(
-        equity_index=list(result.equity_curve.index),
-        equity_values=list(result.equity_curve.values)
+    """Create standalone equity curve chart - NOT cached to ensure updates."""
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=result.equity_curve.index,
+        y=result.equity_curve.values,
+        mode="lines",
+        name="Equity",
+        fill="tozeroy",
+        line=dict(color="#2196f3", width=2)
+    ))
+    fig.update_layout(
+        height=300,
+        template="plotly_dark",
+        title="Equity Curve",
+        xaxis_title="Date",
+        yaxis_title="Equity ($)"
     )
+    return fig
 
 
 # =============================================================================
